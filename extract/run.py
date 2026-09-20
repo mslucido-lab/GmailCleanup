@@ -77,7 +77,8 @@ def main() -> None:
         extractor = Extractor(
             connection,
             GoogleGmailGateway(gmail_service(args.credentials, args.token)),
-            batch_interval_seconds=float(settings.get("GMAIL_METADATA_BATCH_INTERVAL_SECONDS", 10.0)),
+            batch_interval_seconds=float(settings.get("GMAIL_METADATA_BATCH_INTERVAL_SECONDS", 2.0)),
+            batch_size=int(settings.get("GMAIL_METADATA_BATCH_SIZE", 10)),
         )
         extractor.resolve_protected_labels(protected_labels, now=int(time.time()))
         messages = extractor.extract_messages()

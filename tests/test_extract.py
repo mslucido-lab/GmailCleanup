@@ -14,12 +14,14 @@ class FakeGateway:
         self.pages = pages
         self.messages = messages
         self.header_requests: list[tuple[str, ...]] = []
+        self.chunk_sizes: list[int] = []
 
     def list_messages(self, *, page_token: str | None, label_ids: Sequence[str] | None = None) -> dict[str, Any]:
         return self.pages[(page_token, tuple(label_ids) if label_ids else None)]
 
     def get_messages(self, ids: Sequence[str], metadata_headers: Sequence[str]) -> list[dict[str, Any]]:
         self.header_requests.append(tuple(metadata_headers))
+        self.chunk_sizes.append(len(ids))
         return [self.messages[message_id] for message_id in ids]
 
     def list_labels(self) -> list[dict[str, str]]:
@@ -159,8 +161,24 @@ class ExtractionTests(unittest.TestCase):
     def test_metadata_batches_are_proactively_paced(self) -> None:
         gateway = FakeGateway({(None, None): {"messages": [{"id": "m1"}]}}, {"m1": metadata("m1", [("From", "sender@example.com")])})
         delays: list[float] = []
-        Extractor(self.connection, gateway, sleep=delays.append, batch_interval_seconds=10.0).extract_messages()
-        self.assertEqual(delays, [10.0])
+        Extractor(self.connection, gateway, sleep=delays.append, batch_interval_seconds=2.0).extract_messages()
+        self.assertEqual(delays, [2.0])
+
+    def test_batch_size_defaults_to_ten(self) -> None:
+        ids = [f"m{index}" for index in range(25)]
+        messages = {message_id: metadata(message_id, [("From", "sender@example.com")]) for message_id in ids}
+        gateway = FakeGateway({(None, None): {"messages": [{"id": message_id} for message_id in ids]}}, messages)
+        extractor = Extractor(self.connection, gateway, batch_interval_seconds=0)
+        self.assertEqual(extractor.batch_size, 10)
+        self.assertEqual(extractor.extract_messages(), 25)
+        self.assertEqual(gateway.chunk_sizes, [10, 10, 5])
+
+    def test_batch_size_is_configurable(self) -> None:
+        ids = [f"m{index}" for index in range(25)]
+        messages = {message_id: metadata(message_id, [("From", "sender@example.com")]) for message_id in ids}
+        gateway = FakeGateway({(None, None): {"messages": [{"id": message_id} for message_id in ids]}}, messages)
+        Extractor(self.connection, gateway, batch_interval_seconds=0, batch_size=7).extract_messages()
+        self.assertEqual(gateway.chunk_sizes, [7, 7, 7, 4])
 
 
 if __name__ == "__main__":

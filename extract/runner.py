@@ -35,13 +35,15 @@ class Extractor:
         *,
         max_attempts: int = 5,
         sleep: Any = time.sleep,
-        batch_interval_seconds: float = 10.0,
+        batch_interval_seconds: float = 2.0,
+        batch_size: int = 10,
     ) -> None:
         self.connection = connection
         self.gateway = gateway
         self.max_attempts = max_attempts
         self.sleep = sleep
         self.batch_interval_seconds = batch_interval_seconds
+        self.batch_size = batch_size
 
     def _get_metadata(self, ids: Sequence[str], headers: Sequence[str]) -> list[dict[str, Any]]:
         result = self._request(lambda: self.gateway.get_messages(ids, headers))
@@ -129,7 +131,7 @@ class Extractor:
         while True:
             page = self._request(lambda: self.gateway.list_messages(page_token=page_token))
             ids = [message["id"] for message in page.get("messages", [])]
-            for message_ids in chunks(ids):
+            for message_ids in chunks(ids, self.batch_size):
                 metadata = self._get_metadata(message_ids, MAIN_HEADERS)
                 written += self._upsert_messages(metadata)
 
@@ -160,7 +162,7 @@ class Extractor:
                 lambda: self.gateway.list_messages(page_token=page_token, label_ids=("SENT",))
             )
             ids = [message["id"] for message in page.get("messages", [])]
-            for message_ids in chunks(ids):
+            for message_ids in chunks(ids, self.batch_size):
                 for message in self._get_metadata(message_ids, SENT_HEADERS):
                     headers = headers_by_name(message)
                     addresses = recipient_addresses(headers.get("to", []) + headers.get("cc", []))
