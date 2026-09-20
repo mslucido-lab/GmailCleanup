@@ -4,13 +4,18 @@ from __future__ import annotations
 import sqlite3
 import uuid
 import time
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import confirmation_snapshot_hash, connect, migrate
+
+sys.path.insert(0, str(Path(__file__).parent))
+from executor import invoke
 
 DATABASE = Path("data/gmail_cleanup.db")
 app = FastAPI(title="Gmail Cleanup Review")
@@ -32,6 +37,38 @@ class WindowExtension(BaseModel):
 
 class Confirmation(BaseModel):
     note: str = ""
+
+
+@app.post("/api/batches/{batch_id}/restore")
+def restore_batch(batch_id: str):
+    connection = database()
+    try:
+        batch = connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
+        if not batch or batch["status"] != "restore_window":
+            raise HTTPException(409, "Only archived batches can be restored")
+        try:
+            invoke("--restore", batch_id)
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        return {"batch_id": batch_id, "status": "restore_requested"}
+    finally:
+        connection.close()
+
+
+@app.post("/api/batches/{batch_id}/start-archive")
+def start_archive(batch_id: str):
+    connection = database()
+    try:
+        batch = connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
+        if not batch or batch["status"] != "approved":
+            raise HTTPException(409, "Only approved batches can be archived")
+        try:
+            invoke("--archive", batch_id)
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        return {"batch_id": batch_id, "status": "archive_requested"}
+    finally:
+        connection.close()
 
 
 @app.get("/api/groups")
@@ -149,6 +186,12 @@ def confirm_trash(batch_id: str, confirmation: Confirmation):
         return {"batch_id": batch_id, "confirmation_snapshot_hash": digest}
     finally:
         connection.close()
+
+
+@app.get("/")
+def home():
+    """Serve the local UI while keeping every mutable operation on the API."""
+    return FileResponse(Path(__file__).parent / "static" / "app.html")
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
