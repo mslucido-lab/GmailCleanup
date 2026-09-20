@@ -57,7 +57,21 @@ class Extractor:
         response = getattr(error, "resp", None)
         status = getattr(response, "status", None) or getattr(error, "status_code", None)
         if status is not None:
-            return status == 429 or 500 <= int(status) <= 599
+            if status == 429 or 500 <= int(status) <= 599:
+                return True
+            if int(status) == 403:
+                try:
+                    content = getattr(error, "content", b"{}")
+                    if isinstance(content, bytes):
+                        content = content.decode("utf-8")
+                    details = json.loads(content).get("error", {}).get("errors", [])
+                    return any(
+                        item.get("reason") == "rateLimitExceeded" or item.get("domain") == "usageLimits"
+                        for item in details
+                    )
+                except (TypeError, ValueError, UnicodeDecodeError):
+                    return False
+            return False
         return isinstance(error, (TimeoutError, ConnectionError, OSError))
 
     @staticmethod

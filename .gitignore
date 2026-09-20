@@ -10,6 +10,7 @@ data/
 credentials.json
 token.json
 client_secret*.json
+GmailAPICreds.txt
 
 # Python
 __pycache__/

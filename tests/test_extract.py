@@ -141,6 +141,21 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extractor._request(lambda: (_ for _ in ()).throw(ValueError("bug")))
 
+    def test_quota_style_403_is_retryable_but_other_403_is_not(self) -> None:
+        class Response:
+            status = 403
+
+        class QuotaError(Exception):
+            resp = Response()
+            content = b'{"error":{"errors":[{"reason":"rateLimitExceeded","domain":"usageLimits"}]}}'
+
+        class ForbiddenError(Exception):
+            resp = Response()
+            content = b'{"error":{"errors":[{"reason":"forbidden","domain":"global"}]}}'
+
+        self.assertTrue(Extractor._is_transient(QuotaError()))
+        self.assertFalse(Extractor._is_transient(ForbiddenError()))
+
 
 if __name__ == "__main__":
     unittest.main()

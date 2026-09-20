@@ -2,5 +2,6 @@
 
 from .connection import connect
 from .migrate import migrate
+from .snapshots import confirmation_snapshot_hash
 
-__all__ = ("connect", "migrate")
+__all__ = ("connect", "migrate", "confirmation_snapshot_hash")
