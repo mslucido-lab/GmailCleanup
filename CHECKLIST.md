@@ -53,15 +53,20 @@ At ~5 quota units per `messages.get` (Gmail's documented cost) and 50 messages/b
 Stage 1 precedence, the category/brand independence logic, approved-group immutability, the five-factor score, three-way address/domain/brand grouping (static + discovered ESP), and metadata-only privacy in the LLM payload are all correct and well-tested.
 
 ### 4. `review-ui/` — local backend + frontend
-- [ ] Codex: implemented + unit tests (in progress)
-- [ ] Claude: reviewed (in progress)
+- [x] Codex: first full submission — four-view UI, executor bridge for restore, restore-window extension, Trash confirmation (22/22 tests passing)
+- [ ] Claude: reviewed — **2 high-severity gaps, 1 moderate, 1 minor**, holding open rather than accepting:
+  - **HIGH:** the Progress screen isn't wired to any of the three batch-action endpoints. `extend_window`, `confirm_trash`, and `restore_batch` are all correctly implemented on the backend, but `index.html`'s Progress view renders batch status as plain text with no restore/extend/confirm-trash buttons anywhere — the spec's stated "key interaction" for this screen. No way to actually use these actions from the UI right now.
+  - **HIGH:** the Approval Queue has no way to start the archive run. It correctly lists approved batches with accurate safety-flow copy, but unlike restore (which correctly goes through the executor bridge), there's no button/mechanism to invoke the executor to begin archiving — approved batches have no path forward from the UI.
+  - MODERATE: only one new test was added (the approval flow). `extend_window`, `confirm_trash` (eligibility gating, hash correctness), `restore_batch` (including the executor's 503-when-missing path), and the Business-critical block all have zero test coverage — the exact safety-critical logic this milestone is about, and well short of the coverage bar `db/`/`extract/`/`score/` each cleared.
+  - MINOR: `restore_batch` has no guard against a double-click firing two concurrent restore invocations for the same batch.
 - [ ] Mark: accepted
 
-**In-progress checkpoints, resolved:**
+**What's correct and good:** `restore_batch`'s eligibility check correctly allows restoring during the active window, past the deadline, and even after the second confirmation has been given (since `confirm_trash` never moves `status` away from `restore_window`) — matches the spec's "restore stays available any time before the move-to-Trash call actually runs" precisely. The executor bridge (`review-ui/executor.py`) cleanly handles "Gate 5 doesn't exist yet" as a 503 rather than crashing. Approval Queue and Progress copy is accurate (correctly says "queued for reclamation," matches the archive-first safety flow). Checked `requirements.txt`'s `httpx2>=0.1` (initially looked like a typo for `httpx`) and confirmed it's actually correct — the installed Starlette (1.6.0) internally imports `httpx2 as httpx`, so this is the right current dependency, not a mistake.
+
+**Earlier checkpoints, still holding:**
 - Approval/decision, restore-window extension, `delete_pending` computation, and second-confirmation endpoints reviewed early — correct, plus a server-side hard block on approving Business-critical groups beyond the spec's UI-only requirement.
 - Cross-process hash risk fixed: `confirmation_snapshot_hash()` extracted into `db/snapshots.py` as the single canonical implementation, imported by review-ui; `execute/` (Gate 5) will import and call the same function rather than risk an independently-reimplemented, possibly-mismatched hash. Independently re-verified the extracted function's output byte-for-byte against a hand-constructed expected value, including correct filtering to `status='labeled'` only and correct sorting.
 - `GmailAPICreds.txt` (a plaintext copy of the OAuth client secret) — recommended deletion; it's at least now correctly gitignored after a rename.
-- No `review-ui/` tests yet — expected at this checkpoint stage.
 
 ### 5. `execute/` — preflight, archive, restore, Trash flow
 - [ ] Codex: implemented + unit tests
