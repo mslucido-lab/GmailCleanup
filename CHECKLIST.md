@@ -9,7 +9,7 @@ Update this file as part of closing each gate — whoever closes a box edits thi
 ### 1. `db/` — schema, migrations, connection config
 - [x] Codex: implemented (`schema.sql`, `migrate.py`, `connection.py`) + unit tests (4/4 passing)
 - [x] Claude: reviewed — schema matches spec v8 exactly across all 9 tables; the `messages.category` finding is fixed and independently re-verified (4/4 tests pass locally)
-- [ ] Mark: accepted / schema locked
+- [x] Mark: accepted / **schema locked** — reviewed visually in DB Browser for SQLite
 
 ### 2. `extract/` — Gmail metadata pull
 - [ ] Codex: implemented + unit tests
