@@ -14,7 +14,7 @@ Update this file as part of closing each gate — whoever closes a box edits thi
 ### 1a. Schema addendum — `sent_recipients` table (migration 002)
 - [x] Codex: implemented `sent_recipients` as `db/migrations/002_sent_recipients.sql`, applied by the shared runner, with idempotency coverage in unit tests
 - [x] Claude: reviewed — matches spec exactly, no issues
-- [ ] Mark: accepted
+- [x] Mark: accepted
 
 Found by Codex during `extract/` planning: `score/` runs as a separate process after extraction, so the Sent-folder pass's two-way-correspondence data has to be a persisted table, not an in-memory set. v8 described the mechanism but never added the table — fixed in spec v9.
 
@@ -23,7 +23,9 @@ Found by Codex during `extract/` planning: `score/` runs as a separate process a
 - [x] Claude: reviewed — all four v10 items correctly and thoroughly implemented; independently re-ran the full suite (10/10 pass, including the migration-shape assertions confirming attachment columns are actually gone after a fresh `migrate()`); no findings
 - [x] Mark: accepted
 
-**`extract/` is fully closed.** Codex is clear to start `score/` per the Build split order.
+**`extract/` is fully closed** (see the live-run finding below, discovered afterward against Mark's real mailbox). Codex is clear to start `score/` per the Build split order.
+
+**Live-run finding (2026-09-20) — reopening for a fix:** running `extract/run.py` for real against Mark's mailbox failed after 400 messages with `HttpError 403` from Gmail, `reason: 'rateLimitExceeded'` (quota metric `Total Query Cost`, `Units per minute per user`). `Extractor._is_transient()` in `extract/runner.py` only classifies HTTP `429` and `5xx` as retryable — a `403` with a rate-limit reason falls outside that check and gets re-raised immediately instead of retried with backoff. Not caught by the fixture-based tests, since nothing in the test suite exercises real Gmail quota behavior. No data was lost (400 messages are stored; `run_state` has no checkpoint yet since the first page didn't finish, so a resume will safely re-fetch and idempotently overwrite the same first ~500 ids) — but resuming before this is fixed will very likely hit the same 403 again almost immediately. **Fix needed:** `_is_transient()` should also treat HTTP `403` responses carrying `reason: 'rateLimitExceeded'` (or `domain: 'usageLimits'`) as retryable, using the same backoff path as 429/5xx.
 
 **v10 decision recorded** (confirmed by Codex against Google's own Gmail API docs, formalized by Claude in spec v10):
 1. **Remove `has_attachment`, `pct_attachments`, and `attachment_penalty` from v1 entirely** — not shown as "unavailable," fully removed from schema (`db/migrations/003_drop_attachment_columns.sql`), scoring code, and the review-ui score-breakdown row (five factors, not six). `format=metadata` cannot return the MIME structure attachment detection needs, and neither `format=full` (body access) nor `q=has:attachment` search (blocked under `gmail.metadata`) are acceptable workarounds — see spec's Data schema and Scoring model sections.
