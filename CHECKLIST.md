@@ -11,6 +11,13 @@ Update this file as part of closing each gate — whoever closes a box edits thi
 - [x] Claude: reviewed — schema matches spec v8 exactly across all 9 tables; the `messages.category` finding is fixed and independently re-verified (4/4 tests pass locally)
 - [x] Mark: accepted / **schema locked** — reviewed visually in DB Browser for SQLite
 
+### 1a. Schema addendum — `sent_recipients` table (migration 002)
+- [ ] Codex: implement `sent_recipients` (spec v9) as `db/migrations/002_sent_recipients.sql`, apply, update tests
+- [ ] Claude: reviewed
+- [ ] Mark: accepted
+
+Found by Codex during `extract/` planning: `score/` runs as a separate process after extraction, so the Sent-folder pass's two-way-correspondence data has to be a persisted table, not an in-memory set. v8 described the mechanism but never added the table — fixed in spec v9.
+
 ### 2. `extract/` — Gmail metadata pull
 - [ ] Codex: implemented + unit tests
 - [ ] Claude: reviewed
