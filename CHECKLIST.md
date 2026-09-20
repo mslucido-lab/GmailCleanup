@@ -18,7 +18,7 @@ Update this file as part of closing each gate — whoever closes a box edits thi
 
 Found by Codex during `extract/` planning: `score/` runs as a separate process after extraction, so the Sent-folder pass's two-way-correspondence data has to be a persisted table, not an in-memory set. v8 described the mechanism but never added the table — fixed in spec v9.
 
-**Minor cleanup noted, not blocking:** four pre-existing tests in `tests/test_extract.py` instantiate `Extractor` without overriding `batch_interval_seconds`/`sleep`, so they now incur real ~1.1s sleeps per batch instead of running at unit-test speed (suite runtime went from ~0.2s to ~5.8s). Worth passing `batch_interval_seconds=0` in those older tests since they aren't testing pacing behavior.
+**Test-fixture cleanup completed:** extraction fixtures that are not testing pacing now pass `batch_interval_seconds=0`; the dedicated pacing regression test continues to cover the production delay without slowing the suite.
 
 ### 2. `extract/` — Gmail metadata pull
 - [x] Codex: applied v10 and re-submitted — metadata-only extraction, migration 003, malformed-sender skip/logging, scoped Retry-After-aware retries, and fixture tests (10/10 passing)
@@ -81,8 +81,10 @@ Stage 1 precedence, the category/brand independence logic, approved-group immuta
 - `GmailAPICreds.txt` (a plaintext copy of the OAuth client secret) — recommended deletion; it's at least now correctly gitignored after a rename.
 
 ### 5. `execute/` — preflight, archive, restore, Trash flow
-- [ ] Codex: implemented + unit tests
-- [ ] Claude: reviewed
+- [x] Codex: implemented + unit tests — mockable `gmail.modify` gateway; 50-message live preflight/read-snapshot/write chunks; protected/starred exclusion; NULL-guarded pre-archive snapshots; idempotent retry/resume; exact-label restore; confirmation-hash-gated `batchModify`-to-TRASH; dry-run default; and CLI/UI subprocess integration (37/37 full-suite tests passing)
+- [x] Claude: reviewed — every hard safety requirement from the spec is correctly implemented and directly tested against exactly the adversarial scenarios that took multiple rounds to work out earlier in this project: the `original_labels` NULL-guard race under a "write succeeded, response lost" retry (`test_failed_archive_keeps_original_snapshot_and_pending_status_for_resume`), the hash-mismatch-blocks-the-write guarantee (`test_hash_mismatch_invalidates_confirmation_without_a_gmail_write` — asserts zero Gmail writes on mismatch), STARRED as an unconditional safety rail even when absent from config (`test_starred_messages_are_protected_even_if_not_configured_as_a_label`), and TRASH-not-delete verified via the actual `batch_modify` call arguments, not just inference. `gmail.modify`-only scope (separate token file from extraction), dry-run-by-default (including for Cleanup/Archive label creation), and fail-closed protected-label resolution are all correct. Independently re-ran the full suite: 37/37 pass. No live Gmail operation was run, consistent with Codex's own note.
+  - **MODERATE, not blocking:** `restore()` issues one Gmail API call per message rather than batching messages that share the same `original_labels` set into one `batch_modify` call (up to 50, matching archive/trash). Given how unexpectedly tight this project's real quota turned out to be today, restoring a large group (the spec's own example was 8,214 messages) could mean thousands of individual calls instead of ~165 batched ones. Doesn't corrupt anything or crash unsafely — the same resume-on-failure machinery already covers a partial restore — but worth fixing before a large restore is attempted for real.
+  - **MODERATE, narrow, not blocking:** no guard against a concurrent `restore()` + `trash()` race on the same batch — both check `status == 'restore_window'` at their start, and that status doesn't change until either operation *finishes*. The `from_status`-guarded conditional updates prevent DB corruption, but the actual Gmail-side outcome in that specific collision could be surprising. Requires deliberately contradictory actions in a narrow window to matter. Cheap fix if wanted: `restore()` refuses when `permanent_delete_confirmed_at` is already set.
 - [ ] Mark: accepted (dry-run path)
 - [ ] **Mark: live Gmail action explicitly approved** — the one gate that can't be implicit
 
