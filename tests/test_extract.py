@@ -68,7 +68,7 @@ class ExtractionTests(unittest.TestCase):
             },
             messages,
         )
-        extractor = Extractor(self.connection, gateway)
+        extractor = Extractor(self.connection, gateway, batch_interval_seconds=0)
 
         self.assertEqual(extractor.extract_messages(), 2)
         self.assertEqual(extractor.extract_messages(), 0)
@@ -87,7 +87,7 @@ class ExtractionTests(unittest.TestCase):
                 ("Cc", "Carol <carol@Example.com>"),
             ])},
         )
-        extractor = Extractor(self.connection, gateway)
+        extractor = Extractor(self.connection, gateway, batch_interval_seconds=0)
         self.assertEqual(extractor.extract_sent_recipients(), 3)
         self.assertEqual(extractor.extract_sent_recipients(), 0)
         self.assertEqual(
@@ -98,7 +98,7 @@ class ExtractionTests(unittest.TestCase):
 
     def test_protected_labels_fail_closed_before_writing_label_map(self) -> None:
         gateway = FakeGateway({}, {})
-        extractor = Extractor(self.connection, gateway)
+        extractor = Extractor(self.connection, gateway, batch_interval_seconds=0)
         with self.assertRaisesRegex(ValueError, "Missing"):
             extractor.resolve_protected_labels(["Missing"], now=1)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM label_map").fetchone()[0], 0)
@@ -112,7 +112,7 @@ class ExtractionTests(unittest.TestCase):
             },
         )
         with self.assertLogs("extract.runner", level="WARNING") as logs:
-            self.assertEqual(Extractor(self.connection, gateway).extract_messages(), 1)
+            self.assertEqual(Extractor(self.connection, gateway, batch_interval_seconds=0).extract_messages(), 1)
         self.assertIn("Skipping message bad", logs.output[0])
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
 

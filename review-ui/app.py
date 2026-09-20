@@ -47,7 +47,7 @@ def restore_batch(batch_id: str):
         if not batch or batch["status"] != "restore_window":
             raise HTTPException(409, "Only archived batches can be restored")
         try:
-            invoke("--restore", batch_id)
+            invoke("--live", "--restore", batch_id)
         except RuntimeError as error:
             raise HTTPException(503, str(error)) from error
         return {"batch_id": batch_id, "status": "restore_requested"}
@@ -63,7 +63,7 @@ def start_archive(batch_id: str):
         if not batch or batch["status"] != "approved":
             raise HTTPException(409, "Only approved batches can be archived")
         try:
-            invoke("--archive", batch_id)
+            invoke("--live", "--archive", batch_id)
         except RuntimeError as error:
             raise HTTPException(503, str(error)) from error
         return {"batch_id": batch_id, "status": "archive_requested"}
@@ -183,7 +183,11 @@ def confirm_trash(batch_id: str, confirmation: Confirmation):
             connection.execute("UPDATE batches SET permanent_delete_confirmed_at=unixepoch(), confirmation_snapshot_hash=? WHERE batch_id=?", (digest, batch_id))
             labeled_count = connection.execute("SELECT COUNT(*) FROM batch_messages WHERE batch_id=? AND status='labeled'", (batch_id,)).fetchone()[0]
             connection.execute("INSERT INTO audit_log (batch_id,event,message_count,timestamp,note) VALUES (?,'permanent_delete_confirmed',?,unixepoch(),?)", (batch_id, labeled_count, confirmation.note))
-        return {"batch_id": batch_id, "confirmation_snapshot_hash": digest}
+        try:
+            invoke("--live", "--trash", batch_id)
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        return {"batch_id": batch_id, "confirmation_snapshot_hash": digest, "status": "trash_requested"}
     finally:
         connection.close()
 

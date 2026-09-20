@@ -88,7 +88,12 @@ class ReviewUiApiTests(unittest.TestCase):
 
     def test_trash_confirmation_requires_expired_window_and_records_hash(self) -> None:
         batch_id = self._batch_in_restore_window(deadline=time.time() - 1)
-        response = self.client.post(f"/api/batches/{batch_id}/confirm-trash", json={"note": "reviewed"})
+        original_invoke = review_ui.invoke
+        review_ui.invoke = lambda *_: None
+        try:
+            response = self.client.post(f"/api/batches/{batch_id}/confirm-trash", json={"note": "reviewed"})
+        finally:
+            review_ui.invoke = original_invoke
         self.assertEqual(response.status_code, 200)
         connection = connect(self.path)
         batch = connection.execute(
@@ -114,15 +119,15 @@ class ReviewUiApiTests(unittest.TestCase):
                    VALUES ('approved-batch', 'domain:example.com', 'approved', unixepoch(), 1, 100)"""
             )
         connection.close()
-        calls: list[tuple[str, str]] = []
+        calls: list[tuple[str, ...]] = []
         original_invoke = review_ui.invoke
-        review_ui.invoke = lambda operation, batch_id: calls.append((operation, batch_id))
+        review_ui.invoke = lambda *arguments: calls.append(arguments)
         try:
             self.assertEqual(self.client.post(f"/api/batches/{restore_id}/restore").status_code, 200)
             self.assertEqual(self.client.post("/api/batches/approved-batch/start-archive").status_code, 200)
         finally:
             review_ui.invoke = original_invoke
-        self.assertEqual(calls, [("--restore", restore_id), ("--archive", "approved-batch")])
+        self.assertEqual(calls, [("--live", "--restore", restore_id), ("--live", "--archive", "approved-batch")])
 
     def test_executor_unavailable_returns_service_unavailable(self) -> None:
         batch_id = self._batch_in_restore_window()
