@@ -1,0 +1,28 @@
+# Local data — never committed (per Data schema: local SQLite only)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets / credentials
+.env
+*.env
+credentials.json
+token.json
+client_secret*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node (review-ui)
+node_modules/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
