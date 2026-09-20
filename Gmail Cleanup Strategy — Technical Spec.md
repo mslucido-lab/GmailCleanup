@@ -1,6 +1,6 @@
 # Gmail Cleanup Strategy — Technical Spec
 
-2026-09-20 · @Someone · v10 (removes has_attachment/pct_attachments/attachment_penalty — confirmed undetectable under gmail.metadata scope; narrows extraction retry semantics; malformed sender headers are logged and skipped, not fatal)
+2026-09-20 · @Someone · v11 (Stage 2 is reserved for non-consumer domains — a consumer-domain sender's safe fallback is already correct, and asking an LLM to double-check it costs privacy for no benefit)
 
 ## Overview
 
@@ -213,7 +213,7 @@ Classification runs **once per unique `sender_email`**, not per message, and is 
 5. **Newsletters / subscriptions** — message has a `List-Unsubscribe`/`List-ID` header, without promo signals.
 6. **Marketing / promotional** — has `List-Unsubscribe` **and** matches known ESP sending domains or promo-language subject patterns.
 
-Anything that doesn't hit a confident rule above falls through to Stage 2 for `category`.
+Anything that doesn't hit a confident rule above falls through to Stage 2 for `category` — **except on a consumer/free-mail domain.** A consumer-domain sender that hits no rule is an ambiguous personal address, and the safe fallback for that case is already almost certainly correct — there's little to gain and a real privacy cost (sending a personal contact's metadata to a third party) in asking Stage 2 to double-check what's already the right answer. Stage 2 is reserved for non-consumer domains, where a wrong fallback is more consequential (a bulk sender wrongly parked at "Personal correspondence" never gets ranked for cleanup at all) and where brand/ESP inference is needed regardless (see below) — so the same request already has to go out.
 
 **Why Gmail Contacts isn't used for rule 1:** the `gmail.metadata` scope this pipeline runs under doesn't grant People/Contacts API access — that would require a separate OAuth scope and a second consent grant just for this one rule. The Sent-folder signal (below) is also arguably the stronger one: a contact list often includes addresses Mark has never actually corresponded with, where Sent-folder membership means he genuinely emailed them.
 

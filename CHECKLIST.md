@@ -32,14 +32,13 @@ Found by Codex during `extract/` planning: `score/` runs as a separate process a
 4. **`config/settings.yaml`:** add `msn.com` and `gmx.com` to `CONSUMER_DOMAINS` (the spec's own list already had them — the config file just needs to match).
 
 ### 3. `score/` — categorization + scoring
-- [x] Codex: fixed batching, JSON-fence stripping, and model identifier; attempted `brand_source` fix (18/18 full suite passing, independently re-verified)
-- [ ] Claude: reviewed — **1 new regression found**, 3 of 4 prior findings confirmed fixed:
-  - Batching (25/request, scaled `max_tokens`), markdown-fence stripping, and the model identifier are all correct and directly tested. Good.
-  - **REGRESSION (blocking):** the `brand_source` fix overcorrected. It now hardcodes `brand_source = "llm"` for every identity that passes through the enrichment loop, but that loop runs over *all* identities whenever *any* non-consumer-domain sender needs Stage 2 that run — not just the senders actually in `samples`. Confirmed by direct reproduction: a `gmail.com` sender that was never sent to the LLM at all still got `brand_source = 'llm'`, alongside the one sender that genuinely was classified. Since consumer-domain (personal contact) senders are likely the largest single group of unique senders in a real mailbox, this has a *larger* blast radius than the bug it replaced. Fix needs to key off `identity.email in samples`, preserving `identity.brand_source` (the correctly-computed `"not_applicable"`) for anyone not actually sent to the LLM. Not caught by `test_llm_esp_signal_creates_a_brand_group`, which sets `CONSUMER_DOMAINS: []` — no consumer-domain sender in the mix to expose it.
-  - **Still flagging for a spec decision, unchanged from before:** consumer-domain fallback senders never get sent to Stage 2 at all. Still think this is the right call and worth amending the spec to match, rather than a code fix — Mark's call, not blocking.
+- [x] Codex: fixed batching, JSON-fence stripping, model identifier, and the `brand_source` regression, with a dedicated mixed consumer/non-consumer regression test (19/19 full suite passing, independently re-verified)
+- [x] Claude: reviewed — all findings resolved. `brand_source` fix independently re-confirmed by direct reproduction (consumer-domain sender correctly shows `not_applicable`, actually-classified sender correctly shows `llm`). Also recorded a spec decision: amended v11 to explicitly state Stage 2 is reserved for non-consumer domains (a consumer-domain fallback sender's safe default is already correct; sending it to a third party for a second opinion costs privacy for no benefit) — this matches what was already implemented, so no further code change needed.
 - [x] Mark: accepted
 
-Everything else — Stage 1 precedence, the category/brand independence logic, approved-group immutability, the five-factor score, and metadata-only privacy in the LLM payload — remains correct and well-tested.
+**`score/` is fully closed.** Codex is clear to start `review-ui/` per the Build split order.
+
+Stage 1 precedence, the category/brand independence logic, approved-group immutability, the five-factor score, three-way address/domain/brand grouping (static + discovered ESP), and metadata-only privacy in the LLM payload are all correct and well-tested.
 
 ### 4. `review-ui/` — local backend + frontend
 - [ ] Codex: implemented + unit tests
@@ -54,8 +53,8 @@ Everything else — Stage 1 precedence, the category/brand independence logic, a
 
 ## Spec status
 
-- Technical spec: **v10**, committed to `main`.
-- No open spec-level decisions as of v10 — gate 2 (`extract/`) is clear to resume against the recorded decision above.
+- Technical spec: **v11**, committed to `main`.
+- No open spec-level decisions as of v11.
 
 ## Notes
 
