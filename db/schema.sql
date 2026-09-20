@@ -17,6 +17,8 @@ CREATE TABLE messages (
     size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
     is_read INTEGER NOT NULL CHECK (is_read IN (0, 1)),
     is_starred INTEGER NOT NULL CHECK (is_starred IN (0, 1)),
+    -- Removed from the current schema by migration 003; retained here because
+    -- schema.sql is migration 001 and must remain historically replayable.
     has_attachment INTEGER NOT NULL CHECK (has_attachment IN (0, 1)),
     has_list_unsubscribe INTEGER NOT NULL CHECK (has_list_unsubscribe IN (0, 1)),
     labels TEXT NOT NULL DEFAULT '[]',
@@ -73,6 +75,7 @@ CREATE TABLE sender_groups (
     last_seen INTEGER NOT NULL,
     avg_date INTEGER NOT NULL,
     pct_unread REAL NOT NULL CHECK (pct_unread >= 0 AND pct_unread <= 1),
+    -- Removed from the current schema by migration 003; see comment above.
     pct_attachments REAL NOT NULL CHECK (pct_attachments >= 0 AND pct_attachments <= 1),
     pct_starred REAL NOT NULL CHECK (pct_starred >= 0 AND pct_starred <= 1),
     has_protected_label INTEGER NOT NULL CHECK (has_protected_label IN (0, 1)),
