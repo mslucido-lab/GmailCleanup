@@ -1,6 +1,6 @@
 # Gmail Cleanup Strategy — Technical Spec
 
-2026-09-20 · @Someone · v7 (final safety corrections before commit: chunk/preflight granularity, original\_labels write ordering, per-message retry semantics, storage-reclaimed accuracy, audit\_log completeness)
+2026-09-20 · @Someone · v8 (ownership model: single-engineer build with architect review gates; fixes stale "two build streams" language and defines the three-way testing split that closes each gate)
 
 ## Overview
 
@@ -12,9 +12,31 @@ Deletion is also staged, not immediate: an approved batch is labeled and archive
 
 ## Build split
 
-- **Claude Code** owns `extract/`, `score/`, `execute/` — it can authenticate to the Gmail API directly and iterate against Mark's real mailbox, which this chat cannot reach.
-- **Codex** owns `review-ui/` — a local backend plus the frontend it serves (see **Local architecture** — a browser alone can't read SQLite or launch `execute/`), using the four-screen prototype as a visual reference.
-- Both streams share one canonical schema/migrations module, `db/` (see **Local architecture** and **Integration contract**), so there's a single source of truth for the database shape instead of two independently maintained copies.
+**Claude is the architect; Codex is the implementation owner.** This replaces the earlier component-by-component code split: one engineer owns the complete codebase so the shared database contract, safety controls, and integration behavior cannot drift across independently built streams.
+
+| Area | Claude — architect | Codex — engineer |
+| --- | --- | --- |
+| Technical spec | Owns decisions, guardrails, state model, and acceptance criteria | Flags implementation conflicts and keeps code aligned with the approved spec |
+| `db/` | Approves the schema and migration contract | Implements, tests, and versions the shared module first |
+| `extract/` | Defines Gmail-data and privacy constraints | Implements and tests metadata extraction |
+| `score/` | Owns taxonomy, rules, thresholds, and LLM policy | Implements categorization, aggregation, and scoring |
+| `execute/` | Owns irreversible-action safety requirements | Implements preflight, archive, restore, Trash flow, retries, and audit logging |
+| `review-ui/` | Approves workflow, copy, and design intent | Implements the local backend, API, frontend, and UI tests |
+| Integration | Reviews milestones and resolves newly discovered design decisions | Runs integration tests and fixes contract mismatches |
+
+**Testing responsibility is three-way, and this is what actually closes each review gate below — not just "Claude reviews":**
+- **Codex** writes and runs unit tests per component (fixture-based schema tests for `db/`, extraction/scoring fixtures, UI tests, integration tests) as part of building each milestone.
+- **Claude** runs supplemental testing during code review — the things unit tests tend to miss: edge cases, and specifically verifying the safety rails in this spec (preflight ordering, the `original_labels` NULL-guard, fail-closed label resolution, the confirmation-snapshot check, etc.) are actually implemented as specified, not just that the code runs.
+- **Mark**, as product owner, manually tests the feature/functionality itself once Codex's and Claude's checks pass — this is the actual acceptance step that closes a gate and clears the next milestone to start.
+
+**Implementation order and review gates:**
+
+1. Codex implements `db/`, including migrations and fixture-based schema tests.
+2. Claude reviews the schema against this spec; Mark accepts before it's locked.
+3. Codex implements `extract/`, then `score/`, each with fixture-based tests; Claude reviews, Mark accepts each before the next starts.
+4. Codex builds `review-ui/` against the real schema; same review-then-accept gate.
+5. Codex implements `execute/` last, with dry-run as the first acceptance path; same gate.
+6. **No Gmail live action occurs until Mark has manually tested the complete dry-run path and explicitly accepted it** — the one gate that isn't allowed to be implicit.
 
 ## Local architecture
 
@@ -360,7 +382,7 @@ stateDiagram-v2
 
 ## Integration contract (review-ui ↔ extract/score/execute)
 
-review-ui's local backend (see **Local architecture**) is the sole reader/writer of the database on the UI side; `execute/` is the sole writer of execution-state tables during a run. The shared `db/` schema module is the contract between the two build streams, mediated through review-ui's backend rather than accessed directly by a browser.
+review-ui's local backend (see **Local architecture**) is the sole reader/writer of the database on the UI side; `execute/` is the sole writer of execution-state tables during a run. Even though Codex builds both, they still run as separate OS processes at runtime (see Local architecture) — the shared `db/` schema module and the read/write boundary below are what keep that runtime split disciplined, mediated through review-ui's backend rather than accessed directly by a browser.
 
 **review-ui backend reads:**
 - `sender_groups` (ordered by `delete_safety_score` desc) + `sender_identity.rationale` for the Dashboard and Group Review.
@@ -388,9 +410,9 @@ review-ui's local backend (see **Local architecture**) is the sole reader/writer
 - SQLite is opened in **WAL mode** (`PRAGMA journal_mode=WAL`), allowing concurrent readers alongside a single writer — matching this access pattern.
 - Every connection sets `PRAGMA busy_timeout` (e.g. 5000ms) so a momentarily-blocked writer retries automatically instead of raising "database is locked."
 - Every write above is a short, explicit transaction, never held open across a network call — a Gmail API call always completes (or fails) *before* the local transaction that records its result begins.
-- Schema and migrations are owned by the one shared `db/` module described in **Local architecture**, imported by all four components, so the two build streams never maintain two competing definitions of the database.
+- Schema and migrations are owned by the one shared `db/` module described in **Local architecture**, imported by all four components, so there's exactly one definition of the database shape even across separate runtime processes.
 
-This lets both build streams proceed against this document and the shared `db/` module without coordinating on anything beyond the schema and the API surface above.
+This keeps the runtime boundary between review-ui's backend and `execute/` explicit and testable even though one engineer builds both — the concurrency and API-surface rules above are enforceable constraints on the code, not just a coordination convention for two separate teams.
 
 ## UI/UX prototype
 
@@ -436,7 +458,7 @@ v1 has no UI for editing these — Mark edits the YAML directly. Config-driven e
 
 ## Handoff notes
 
-Build in this order: extraction, then scoring (including categorization), then the review UI, then execution. Each stage is runnable and checkable on its own before the next depends on it.
+See **Build split** for the authoritative implementation order and review gates. Each stage is runnable and checkable on its own before the next depends on it.
 
 ```
 gmail-cleanup/
