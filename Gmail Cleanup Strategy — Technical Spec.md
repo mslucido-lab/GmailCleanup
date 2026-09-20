@@ -1,6 +1,6 @@
 # Gmail Cleanup Strategy — Technical Spec
 
-2026-09-20 · @Someone · v9 (adds the missing `sent_recipients` table — caught by Codex before extract/ was built against the gap — and documents why it needs no checkpoint of its own)
+2026-09-20 · @Someone · v10 (removes has_attachment/pct_attachments/attachment_penalty — confirmed undetectable under gmail.metadata scope; narrows extraction retry semantics; malformed sender headers are logged and skipped, not fatal)
 
 ## Overview
 
@@ -81,12 +81,13 @@ Metadata only — never message bodies — pulled once and stored locally in SQL
 | size\_bytes | integer | |
 | is\_read | boolean | |
 | is\_starred | boolean | |
-| has\_attachment | boolean | |
 | has\_list\_unsubscribe | boolean | derived from `List-Unsubscribe` / `List-ID` headers — needed by the categorizer |
 | labels | text | JSON array of Gmail label ids **at extraction time** — treated as historical/reference data only; execution never trusts this column for its protected-message check or its restore snapshot (see Review workflow's preflight step) |
 | category | text | copied from `sender_identity.category` for this message's `sender_email` |
 
 Because extraction excludes Spam/Trash by default (see Extraction architecture), no row here can carry a live `SPAM` label — that's structural, not a filter applied after the fact.
+
+**v10 removed `has_attachment` (and, correspondingly, `sender_groups.pct_attachments` below and `attachment_penalty` from the scoring model).** Google documents `format=metadata` as returning only message IDs, labels, and headers — no MIME payload/body structure, which is what attachment detection actually requires; that's only available via `format=full`, which this design deliberately doesn't use (see Extraction architecture). Confirmed against Google's own Gmail API documentation before this decision was made, not just inferred. The column is removed via `db/migrations/003_drop_attachment_columns.sql` rather than kept and always written `false` — a column that's always `0` regardless of the real mailbox would misrepresent it, which is worse than not having the column at all. If broader scope is ever adopted for another reason, re-adding this is a small future migration; it's not worth requesting more access than the tool otherwise needs for one scoring factor.
 
 **`sender_identity`** — the output of the categorization pipeline, one row per unique `sender_email`. This is the cache that makes classification a one-time cost regardless of how many messages a sender has.
 
@@ -121,7 +122,6 @@ Approvals happen at this level.
 | last\_seen | integer | |
 | avg\_date | integer | epoch average of member messages' `date` — feeds `age_weight` |
 | pct\_unread | real | |
-| pct\_attachments | real | |
 | pct\_starred | real | |
 | has\_protected\_label | boolean | true if any member message carried a label resolved via `label_map` into the configured protected-label set, as of extraction (see Config). This is a **ranking/display signal only** — it does not gate approval; see the UI/UX section for why only Business-critical locks the Dashboard row, and Review workflow's preflight step for the live re-check that actually protects messages at execution time. |
 | delete\_safety\_score | real | computed, see Scoring model |
@@ -275,7 +275,6 @@ def delete_safety_score(group):
     score = CATEGORY_WEIGHT[group.category]                       # 0-40
     score += sender_pattern_weight(group)                          # 0-20
     score += age_weight(group)                                     # 0-20
-    score -= attachment_penalty(group)                             # 0-20
     score += size_bonus(group)                                     # 0-10
     if group.pct_starred > 0 or group.has_protected_label:
         return 0                                                   # deprioritizes the group; does NOT
@@ -293,13 +292,12 @@ def age_weight(group):
     avg_age_years = (TODAY - group.avg_date).days / 365            # avg_date computed at aggregation time
     return min(avg_age_years / 6, 1) * 20
 
-def attachment_penalty(group):
-    return group.pct_attachments * 20                              # attachments pull the score down hard
-
 def size_bonus(group):
     # bigger space savings ranks higher for review priority, not deletion itself
     return min(group.total_size_bytes / (2 * 1024**3), 1) * 10
 ```
+
+*(v10 removed `attachment_penalty` — see Data schema for why `has_attachment`/`pct_attachments` no longer exist to compute it from. The remaining weights are unchanged and not rebalanced to compensate: this score was never meant to hit exactly 100, only to rank groups relative to each other, so dropping a subtractive term just means attachment-bearing groups are no longer penalized for something this design can no longer detect — not a gap that needs filling elsewhere.)*
 
 `avg_date` and `has_protected_label` are computed during the aggregation pass that builds `sender_groups`:
 - `avg_date = AVG(messages.date)` over the group's member messages.
@@ -311,7 +309,9 @@ def size_bonus(group):
 
 Read/unread status is not scored directly. It is shown alongside the sample messages in the review screen, since its meaning flips by category — unread marketing suggests no engagement, but unread personal mail may mean something was missed.
 
-**UI display labels (from the prototype, use verbatim in review-ui):** the six score components are always shown as bars in this order and under these exact labels, even when a factor contributes zero — "Sender category," "Sender pattern," "Age," "Attachment penalty," "Starred / labeled," "Size bonus." The "Starred / labeled" row is where `has_protected_label`/`pct_starred` surfaces to Mark, distinct from the score's hard-override behavior described above.
+**UI display labels (from the prototype, use verbatim in review-ui):** the score components are shown as bars in this order and under these exact labels, even when a factor contributes zero — "Sender category," "Sender pattern," "Age," "Starred / labeled," "Size bonus." The "Starred / labeled" row is where `has_protected_label`/`pct_starred` surfaces to Mark, distinct from the score's hard-override behavior described above.
+
+**v10: the prototype's "Attachment penalty" row is dropped, not shown as "unavailable."** A permanently-N/A row that can never show real data is UI clutter without informational value; the remaining five factors stay fully meaningful on their own. If attachment detection ever becomes possible under a future scope change, this row can come back then.
 
 ## Extraction architecture
 
@@ -331,7 +331,8 @@ flowchart LR
 - **Pagination:** `users.messages.list` returns up to 500 ids per page.
 - **Fetching each page's metadata — there is no `messages.batchGet`.** Gmail has no dedicated bulk-get method for message content; per-message metadata is fetched via Google's general-purpose HTTP batching mechanism — a single `multipart/mixed` HTTP request bundling many individual `users.messages.get` calls (`format=metadata`, `metadataHeaders=[From, Subject, Date, List-Unsubscribe, List-ID]`), each returning its own sub-response in one round trip. **Google's current guidance caps a single HTTP batch at 50 inner requests** (not 100) — a 500-id page therefore needs 10 batch calls.
 - **Spam & Trash are excluded, deliberately:** `users.messages.list` excludes both by default, and this pipeline does not set `includeSpamTrash=true` — the `gmail.metadata` scope also doesn't support the search-query parameters (`q=`) that finer-grained inclusion would need. This is a scope decision, not an oversight: both self-purge on Gmail's own 30-day cycle regardless of this tool, so they were never part of the long-term storage problem being solved. One consequence: the extracted `messages` table will be smaller than whatever the 412,847-message / 61.2 GB headline figures include, to the extent Spam/Trash contribute to Gmail's own account-storage accounting transiently. See Future work if this is ever revisited.
-- **Rate limits:** Gmail's API allows roughly 250 quota units/user/second; batching gets/lists (up to 50 inner requests per HTTP batch, per Google's current guidance) keeps this well under budget even at 412k messages. On `429`/`5xx`, retry with exponential backoff (start 1s, ×2, up to 5 attempts, honor any `Retry-After` header); after exhausting retries, log and skip that page/batch — it's picked up again on the next checkpointed run rather than aborting the whole pull.
+- **Rate limits:** Gmail's API allows roughly 250 quota units/user/second; batching gets/lists (up to 50 inner requests per HTTP batch, per Google's current guidance) keeps this well under budget even at 412k messages. On `429`/`5xx`/transport-level failures (timeouts, connection errors), retry with exponential backoff (start 1s, ×2, up to 5 attempts, honoring any `Retry-After` header when present instead of the computed delay); after exhausting retries, log and skip that page/batch — it's picked up again on the next checkpointed run rather than aborting the whole pull. **Retries are scoped to those failure types only** — a programming or data-validation error (e.g. a malformed record the code doesn't know how to handle) is re-raised immediately, never retried, so a real bug surfaces right away instead of being masked behind five attempts of growing delay.
+- **A message with an unparseable `From` header is logged and skipped, not fatal to the run.** Across 412k messages spanning two decades, at least one malformed or unusual header is likely. That one message is excluded from `messages` (logged with its id and reason) while the rest of its batch and the overall checkpointed pull continue normally — this is a small, permanent, accepted gap in coverage for edge cases, not something retried later, and it must never abort or corrupt the page checkpoint for everything else.
 - **Checkpointing:** store the last successful `pageToken` and message count in `run_state`; a crashed or interrupted run resumes from there instead of restarting.
 - **Sent-folder pass:** one additional bounded pull over the Sent folder (same HTTP-batching mechanics, `metadataHeaders=[To, Cc]`), writing every parsed address into the persisted `sent_recipients` table (see Data schema) — not held in memory, since `score/` reads it in a separate, later run. No checkpoint of its own is needed; see Data schema for why restarting it from scratch is safe.
 - **Label resolution (read-only, this stage):** at `extract`/`score` startup, resolve every configured `PROTECTED_LABELS` name against `users.labels.list` into `label_map`; fail closed if any name doesn't resolve. `Cleanup/Archive` is **not** touched here — it's resolved-or-created later, at `execute/`'s startup, once `gmail.modify` is available (see Data schema's `label_map` entry).
@@ -432,7 +433,7 @@ A four-screen clickable prototype covers the whole flow: [Gmail Cleanup — Revi
 | Screen | Shows | Key interaction |
 | --- | --- | --- |
 | Dashboard | Sender groups ranked by score, with category filter chips (counts per category), message count, size, and active date range | **Multi-select via checkboxes**, with a persistent bottom summary bar (count/messages/size) across the current selection; jump into a group's review |
-| Group review | One sender's score breakdown (the six named factors above, each its own bar) plus a sample of real subject lines with read/unread dot and size | Reject, skip, or approve the group |
+| Group review | One sender's score breakdown (the five named factors above, each its own bar) plus a sample of real subject lines with read/unread dot and size | Reject, skip, or approve the group |
 | Approval queue | The batch about to be actioned — every approved group, total count and size, plain-language explanation of what happens next | Confirm and start the archive run |
 | Progress | Per-batch live progress, running totals (messages archived / **bytes queued for reclamation** / batches trashed), and a per-group restore countdown | Restore, or **extend the restore window**, for any archived group before its deadline; restore is disabled while a batch is still archiving |
 

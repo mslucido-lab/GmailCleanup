@@ -19,13 +19,15 @@ Update this file as part of closing each gate — whoever closes a box edits thi
 Found by Codex during `extract/` planning: `score/` runs as a separate process after extraction, so the Sent-folder pass's two-way-correspondence data has to be a persisted table, not an in-memory set. v8 described the mechanism but never added the table — fixed in spec v9.
 
 ### 2. `extract/` — Gmail metadata pull
-- [x] Codex: implemented (`extract/` metadata-only runner, Google HTTP-batch adapter, OAuth CLI) + fixture-based unit tests (8/8 full suite passing)
-- [ ] Claude: reviewed — **1 high-severity finding open**, 2 moderate, 1 trivial:
-  - **HIGH:** `has_attachment()` recurses into `payload.parts`, but `format=metadata` (used throughout `gateway.py`) doesn't return that field at all — every message will silently score `has_attachment=0` regardless of reality. Needs verification against live Gmail, then likely a scoring-model decision (drop `attachment_penalty` for v1 — `gmail.metadata` can't search `has:attachment`, and `format=full` would mean downloading bodies).
-  - MEDIUM: an unparseable `From` header aborts the entire extraction run rather than skipping the one message.
-  - MEDIUM: retry logic catches bare `Exception` and doesn't honor `Retry-After`, per spec.
-  - LOW: `config/settings.yaml`'s `CONSUMER_DOMAINS` is missing `msn.com`/`gmx.com` from the spec list.
+- [ ] Codex: apply the v10 decision below, then re-submit for review
+- [ ] Claude: reviewed
 - [ ] Mark: accepted
+
+**v10 decision recorded** (confirmed by Codex against Google's own Gmail API docs, formalized by Claude in spec v10):
+1. **Remove `has_attachment`, `pct_attachments`, and `attachment_penalty` from v1 entirely** — not shown as "unavailable," fully removed from schema (`db/migrations/003_drop_attachment_columns.sql`), scoring code, and the review-ui score-breakdown row (five factors, not six). `format=metadata` cannot return the MIME structure attachment detection needs, and neither `format=full` (body access) nor `q=has:attachment` search (blocked under `gmail.metadata`) are acceptable workarounds — see spec's Data schema and Scoring model sections.
+2. **Malformed `From` header:** log and skip that one message; do not abort the run or corrupt the page checkpoint.
+3. **Retry logic:** scope retries to `429`/`5xx`/transport failures only, honor `Retry-After` when present, re-raise programming/validation errors immediately.
+4. **`config/settings.yaml`:** add `msn.com` and `gmx.com` to `CONSUMER_DOMAINS` (the spec's own list already had them — the config file just needs to match).
 
 ### 3. `score/` — categorization + scoring
 - [ ] Codex: implemented + unit tests
@@ -45,8 +47,8 @@ Found by Codex during `extract/` planning: `score/` runs as a separate process a
 
 ## Spec status
 
-- Technical spec: **v9**, committed to `main`.
-- Open: whether `attachment_penalty` survives v1's scoring model, pending the `has_attachment` finding under gate 2.
+- Technical spec: **v10**, committed to `main`.
+- No open spec-level decisions as of v10 — gate 2 (`extract/`) is clear to resume against the recorded decision above.
 
 ## Notes
 
