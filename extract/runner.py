@@ -35,7 +35,7 @@ class Extractor:
         *,
         max_attempts: int = 5,
         sleep: Any = time.sleep,
-        batch_interval_seconds: float = 3.1,
+        batch_interval_seconds: float = 10.0,
     ) -> None:
         self.connection = connection
         self.gateway = gateway

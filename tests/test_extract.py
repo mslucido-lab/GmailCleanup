@@ -159,8 +159,8 @@ class ExtractionTests(unittest.TestCase):
     def test_metadata_batches_are_proactively_paced(self) -> None:
         gateway = FakeGateway({(None, None): {"messages": [{"id": "m1"}]}}, {"m1": metadata("m1", [("From", "sender@example.com")])})
         delays: list[float] = []
-        Extractor(self.connection, gateway, sleep=delays.append, batch_interval_seconds=3.1).extract_messages()
-        self.assertEqual(delays, [3.1])
+        Extractor(self.connection, gateway, sleep=delays.append, batch_interval_seconds=10.0).extract_messages()
+        self.assertEqual(delays, [10.0])
 
 
 if __name__ == "__main__":
