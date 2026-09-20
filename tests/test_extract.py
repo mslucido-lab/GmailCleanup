@@ -156,6 +156,12 @@ class ExtractionTests(unittest.TestCase):
         self.assertTrue(Extractor._is_transient(QuotaError()))
         self.assertFalse(Extractor._is_transient(ForbiddenError()))
 
+    def test_metadata_batches_are_proactively_paced(self) -> None:
+        gateway = FakeGateway({(None, None): {"messages": [{"id": "m1"}]}}, {"m1": metadata("m1", [("From", "sender@example.com")])})
+        delays: list[float] = []
+        Extractor(self.connection, gateway, sleep=delays.append, batch_interval_seconds=1.1).extract_messages()
+        self.assertEqual(delays, [1.1])
+
 
 if __name__ == "__main__":
     unittest.main()

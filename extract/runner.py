@@ -35,11 +35,21 @@ class Extractor:
         *,
         max_attempts: int = 5,
         sleep: Any = time.sleep,
+        batch_interval_seconds: float = 1.1,
     ) -> None:
         self.connection = connection
         self.gateway = gateway
         self.max_attempts = max_attempts
         self.sleep = sleep
+        self.batch_interval_seconds = batch_interval_seconds
+
+    def _get_metadata(self, ids: Sequence[str], headers: Sequence[str]) -> list[dict[str, Any]]:
+        result = self._request(lambda: self.gateway.get_messages(ids, headers))
+        # HTTP batches contain many individual messages.get calls; space them
+        # proactively to stay below Gmail's sustained per-user quota window.
+        if self.batch_interval_seconds > 0:
+            self.sleep(self.batch_interval_seconds)
+        return result
 
     def _request(self, operation: Any) -> Any:
         """Retry transient Gmail failures; leave the page checkpoint unchanged on failure."""
@@ -120,7 +130,7 @@ class Extractor:
             page = self._request(lambda: self.gateway.list_messages(page_token=page_token))
             ids = [message["id"] for message in page.get("messages", [])]
             for message_ids in chunks(ids):
-                metadata = self._request(lambda: self.gateway.get_messages(message_ids, MAIN_HEADERS))
+                metadata = self._get_metadata(message_ids, MAIN_HEADERS)
                 written += self._upsert_messages(metadata)
 
             next_token = page.get("nextPageToken")
@@ -151,7 +161,7 @@ class Extractor:
             )
             ids = [message["id"] for message in page.get("messages", [])]
             for message_ids in chunks(ids):
-                for message in self._request(lambda: self.gateway.get_messages(message_ids, SENT_HEADERS)):
+                for message in self._get_metadata(message_ids, SENT_HEADERS):
                     headers = headers_by_name(message)
                     addresses = recipient_addresses(headers.get("to", []) + headers.get("cc", []))
                     with self.connection:

@@ -74,7 +74,11 @@ def main() -> None:
     connection = connect(args.database)
     try:
         migrate(connection)
-        extractor = Extractor(connection, GoogleGmailGateway(gmail_service(args.credentials, args.token)))
+        extractor = Extractor(
+            connection,
+            GoogleGmailGateway(gmail_service(args.credentials, args.token)),
+            batch_interval_seconds=float(settings.get("GMAIL_METADATA_BATCH_INTERVAL_SECONDS", 1.1)),
+        )
         extractor.resolve_protected_labels(protected_labels, now=int(time.time()))
         messages = extractor.extract_messages()
         recipients = extractor.extract_sent_recipients()
