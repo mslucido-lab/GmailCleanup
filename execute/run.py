@@ -78,6 +78,8 @@ def main() -> None:
             protected_label_names=settings["PROTECTED_LABELS"],
             restore_window_days=int(settings.get("RESTORE_WINDOW_DAYS", 30)),
             batch_size_cap=int(settings.get("BATCH_SIZE_CAP", 5_000)),
+            gmail_batch_size=int(settings.get("GMAIL_METADATA_BATCH_SIZE", 10)),
+            gmail_batch_interval_seconds=float(settings.get("GMAIL_METADATA_BATCH_INTERVAL_SECONDS", 2.0)),
         )
         executor.provision_labels(allow_create=args.live)
         batch_id, operation = next((value, name) for name, value in (("archive", args.archive), ("restore", args.restore), ("trash", args.trash)) if value)

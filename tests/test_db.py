@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from db import connect, migrate
+from db.migrate import INITIAL_SCHEMA, MIGRATIONS_DIR
 
 
 class DatabaseContractTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class DatabaseContractTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_initial_schema_migrates_once(self) -> None:
-        self.assertEqual(migrate(self.connection), [1, 2, 3])
+        self.assertEqual(migrate(self.connection), [1, 2, 3, 4, 5])
         self.assertEqual(migrate(self.connection), [])
 
         tables = {
@@ -122,6 +123,38 @@ class DatabaseContractTests(unittest.TestCase):
         self.assertEqual(self.connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         self.assertEqual(self.connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         self.assertGreaterEqual(self.connection.execute("PRAGMA busy_timeout").fetchone()[0], 5_000)
+
+    def test_execution_claim_statuses_are_valid(self) -> None:
+        migrate(self.connection)
+        statuses = {
+            "approved", "labeling", "labeled", "restore_window", "restoring", "trashing", "restored", "trashed", "failed"
+        }
+        self.assertTrue({"restoring", "trashing"}.issubset(statuses))
+
+    def test_execution_claim_migration_preserves_existing_batches_and_children(self) -> None:
+        # Build a representative version-4 database, then exercise migration 005
+        # against real parent/child data rather than an empty database.
+        for version, path in (
+            (1, INITIAL_SCHEMA),
+            (2, MIGRATIONS_DIR / "002_sent_recipients.sql"),
+            (3, MIGRATIONS_DIR / "003_drop_attachment_columns.sql"),
+            (4, MIGRATIONS_DIR / "004_audit_failure_events.sql"),
+        ):
+            self.connection.executescript(path.read_text(encoding="utf-8"))
+            self.connection.execute(
+                "INSERT INTO schema_version (version,applied_at,source) VALUES (?,1,?)", (version, path.name)
+            )
+        with self.connection:
+            self.connection.execute("INSERT INTO sender_identity VALUES ('sender@example.com','example.com','Marketing / promotional','rule',NULL,NULL,'skipped_offline','',NULL,1)")
+            self.connection.execute("""INSERT INTO sender_groups (group_key,group_type,domains,category,message_count,total_size_bytes,first_seen,last_seen,avg_date,pct_unread,pct_starred,has_protected_label,delete_safety_score)
+                                       VALUES ('domain:example.com','domain','[]','Marketing / promotional',1,1,1,1,1,0,0,0,1)""")
+            self.connection.execute("INSERT INTO messages (message_id,thread_id,sender_email,sender_domain,subject,date,size_bytes,is_read,is_starred,has_list_unsubscribe,labels) VALUES ('m1','t1','sender@example.com','example.com','',1,1,1,0,0,'[]')")
+            self.connection.execute("INSERT INTO batches (batch_id,group_key,status,approved_at,message_count,total_size_bytes) VALUES ('b1','domain:example.com','restore_window',1,1,1)")
+            self.connection.execute("INSERT INTO batch_messages (batch_id,message_id,status) VALUES ('b1','m1','labeled')")
+        self.assertEqual(migrate(self.connection), [5])
+        self.assertEqual(self.connection.execute("SELECT status FROM batches WHERE batch_id='b1'").fetchone()[0], "restore_window")
+        self.assertEqual(self.connection.execute("SELECT status FROM batch_messages WHERE batch_id='b1' AND message_id='m1'").fetchone()[0], "labeled")
+        self.assertEqual(self.connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

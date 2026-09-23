@@ -39,6 +39,10 @@ class Confirmation(BaseModel):
     note: str = ""
 
 
+class RetryRequest(BaseModel):
+    operation: str | None = None
+
+
 @app.post("/api/batches/{batch_id}/restore")
 def restore_batch(batch_id: str):
     connection = database()
@@ -71,14 +75,61 @@ def start_archive(batch_id: str):
         connection.close()
 
 
+def retry_operations(connection: sqlite3.Connection, batch_id: str) -> list[str]:
+    """Return only resume operations justified by durable execution state."""
+    failure = connection.execute(
+        "SELECT note FROM audit_log WHERE batch_id=? AND event='failed' ORDER BY timestamp DESC,id DESC LIMIT 1",
+        (batch_id,),
+    ).fetchone()
+    if failure and failure["note"].startswith("operation="):
+        operation = failure["note"].split(";", 1)[0].removeprefix("operation=")
+        if operation in {"archive", "restore", "trash"}:
+            return [operation]
+    pending = connection.execute(
+        "SELECT COUNT(*) FROM batch_messages WHERE batch_id=? AND status='pending'", (batch_id,)
+    ).fetchone()[0]
+    if pending:
+        return ["archive"]
+    trashed = connection.execute(
+        "SELECT COUNT(*) FROM batch_messages WHERE batch_id=? AND status='trashed'", (batch_id,)
+    ).fetchone()[0]
+    if trashed:
+        return ["trash"]
+    # A failed restore and a failed first Trash chunk both leave only labeled
+    # rows. Do not guess which irreversible-adjacent operation should resume.
+    return ["restore", "trash"]
+
+
+@app.post("/api/batches/{batch_id}/retry")
+def retry_batch(batch_id: str, request: RetryRequest):
+    connection = database()
+    try:
+        batch = connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
+        if not batch or batch["status"] != "failed":
+            raise HTTPException(409, "Only failed batches can be retried")
+        operations = retry_operations(connection, batch_id)
+        if request.operation is None and len(operations) != 1:
+            raise HTTPException(409, "Choose whether to retry restore or Trash")
+        operation = request.operation or operations[0]
+        if operation not in operations:
+            raise HTTPException(422, "Retry operation is not valid for this batch")
+        try:
+            invoke("--live", f"--{operation}", batch_id)
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        return {"batch_id": batch_id, "status": "retry_requested", "operation": operation}
+    finally:
+        connection.close()
+
+
 @app.get("/api/groups")
 def groups(category: str | None = None):
     connection = database()
     try:
-        sql = "SELECT * FROM sender_groups"
+        sql = "SELECT * FROM sender_groups WHERE approval_status='pending'"
         args: list[str] = []
         if category:
-            sql += " WHERE category=?"
+            sql += " AND category=?"
             args.append(category)
         sql += " ORDER BY delete_safety_score DESC, total_size_bytes DESC"
         return [dict(row) for row in connection.execute(sql, args)]
@@ -143,6 +194,8 @@ def batches():
         values = []
         for row in connection.execute("SELECT * FROM batches ORDER BY approved_at DESC"):
             value = dict(row)
+            if value["status"] == "failed":
+                value["retry_operations"] = retry_operations(connection, value["batch_id"])
             if value["status"] == "restore_window" and value["restore_deadline"] < time.time():
                 value["display_status"] = "delete_pending"
             else:

@@ -16,6 +16,7 @@ class FakeGmail:
         self.modifies: list[tuple[list[str], list[str], list[str]]] = []
         self.fail_preflight = False
         self.fail_writes = 0
+        self.preflights: list[list[str]] = []
 
     def list_labels(self):
         return [
@@ -28,6 +29,7 @@ class FakeGmail:
         return {"name": name, "id": "archive-label"}
 
     def get_current_labels(self, ids):
+        self.preflights.append(list(ids))
         if self.fail_preflight:
             raise TimeoutError("network unavailable")
         return {message_id: list(self.live_labels[message_id]) for message_id in ids}
@@ -78,7 +80,8 @@ class ExecutorTests(unittest.TestCase):
         return batch_id
 
     def _executor(self, gateway: FakeGmail, **kwargs) -> Executor:
-        executor = Executor(self.connection, gateway, protected_label_names=("STARRED", "IMPORTANT"), sleep=lambda _: None, **kwargs)
+        sleep = kwargs.pop("sleep", lambda _: None)
+        executor = Executor(self.connection, gateway, protected_label_names=("STARRED", "IMPORTANT"), sleep=sleep, **kwargs)
         executor.provision_labels(allow_create=True)
         return executor
 
@@ -118,7 +121,7 @@ class ExecutorTests(unittest.TestCase):
         gateway = FakeGmail({"m1": ["archive-label"], "m2": ["archive-label"]})
         result = self._executor(gateway).restore(batch_id, dry_run=False)
         self.assertEqual(result, {"restored": 2, "excluded": 0})
-        self.assertEqual(gateway.modifies, [(["m1"], ["INBOX", "custom"], ["archive-label"]), (["m2"], ["INBOX", "custom"], ["archive-label"])])
+        self.assertEqual(gateway.modifies, [(["m1", "m2"], ["INBOX", "custom"], ["archive-label"])])
         self.assertEqual(self.connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()[0], "restored")
 
     def test_trash_requires_matching_second_confirmation_then_uses_trash_not_delete(self) -> None:
@@ -162,6 +165,9 @@ class ExecutorTests(unittest.TestCase):
             self._executor(gateway, max_attempts=1).archive(batch_id, dry_run=False)
         self.assertEqual(self.connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()[0], "failed")
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM batch_messages WHERE batch_id=? AND status='pending'", (batch_id,)).fetchone()[0], 2)
+        audit = self.connection.execute("SELECT event,note FROM audit_log WHERE batch_id=?", (batch_id,)).fetchone()
+        self.assertEqual(audit[0], "failed")
+        self.assertIn("operation=archive; TimeoutError: network unavailable", audit[1])
 
     def test_starred_messages_are_protected_even_if_not_configured_as_a_label(self) -> None:
         batch_id = self._batch()
@@ -171,6 +177,36 @@ class ExecutorTests(unittest.TestCase):
         executor.archive(batch_id, dry_run=False)
         rows = self.connection.execute("SELECT message_id,status FROM batch_messages WHERE batch_id=? ORDER BY message_id", (batch_id,)).fetchall()
         self.assertEqual([(row[0], row[1]) for row in rows], [("m1", "excluded_protected"), ("m2", "labeled")])
+
+    def test_execution_paces_each_preflight_and_write_and_honors_chunk_size(self) -> None:
+        batch_id = self._batch()
+        gateway = FakeGmail({"m1": ["INBOX"], "m2": ["INBOX"]})
+        delays: list[float] = []
+        self._executor(gateway, gmail_batch_size=1, gmail_batch_interval_seconds=2.0, sleep=delays.append).archive(batch_id, dry_run=False)
+        self.assertEqual(gateway.preflights, [["m1"], ["m2"]])
+        self.assertEqual(gateway.modifies, [(["m1"], ["archive-label"], ["INBOX"]), (["m2"], ["archive-label"], ["INBOX"])])
+        self.assertEqual(delays, [2.0, 2.0, 2.0, 2.0])
+
+    def test_google_transport_errors_are_retried_as_transient(self) -> None:
+        from google.auth.exceptions import TransportError
+        from httplib2.error import ServerNotFoundError
+
+        self.assertTrue(Executor._is_transient(TransportError("token refresh DNS failure")))
+        self.assertTrue(Executor._is_transient(ServerNotFoundError("Gmail DNS failure")))
+
+    def test_restore_and_trash_claims_are_mutually_exclusive(self) -> None:
+        batch_id = self._batch()
+        with self.connection:
+            self.connection.execute("UPDATE batches SET status='restore_window', restore_deadline=?, permanent_delete_confirmed_at=1 WHERE batch_id=?", (time.time() - 1, batch_id))
+            self.connection.execute("UPDATE batch_messages SET status='labeled', original_labels='[\"INBOX\"]' WHERE batch_id=?", (batch_id,))
+            digest = confirmation_snapshot_hash(self.connection, batch_id)
+            self.connection.execute("UPDATE batches SET confirmation_snapshot_hash=? WHERE batch_id=?", (digest, batch_id))
+        gateway = FakeGmail({"m1": ["archive-label"], "m2": ["archive-label"]})
+        executor = self._executor(gateway)
+        executor._claim(batch_id, "restoring", ("restore_window",), "claimed")
+        with self.assertRaisesRegex(ValueError, "confirmed restore-window"):
+            executor.trash(batch_id, dry_run=False)
+        self.assertEqual(self.connection.execute("SELECT status FROM batches WHERE batch_id=?", (batch_id,)).fetchone()[0], "restoring")
 
 
 if __name__ == "__main__":

@@ -109,7 +109,7 @@ CREATE TABLE run_state (
 CREATE TABLE batches (
     batch_id TEXT PRIMARY KEY,
     group_key TEXT NOT NULL REFERENCES sender_groups(group_key),
-    status TEXT NOT NULL CHECK (status IN ('approved', 'labeling', 'labeled', 'restore_window', 'restored', 'trashed', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('approved', 'labeling', 'labeled', 'restore_window', 'restoring', 'trashing', 'restored', 'trashed', 'failed')),
     approved_at INTEGER NOT NULL,
     labeled_at INTEGER,
     restore_deadline INTEGER,
@@ -144,7 +144,8 @@ CREATE TABLE audit_log (
         'restored',
         'window_extended',
         'permanent_delete_confirmed',
-        'moved_to_trash'
+        'moved_to_trash',
+        'failed'
     )),
     message_count INTEGER NOT NULL CHECK (message_count >= 0),
     timestamp INTEGER NOT NULL,

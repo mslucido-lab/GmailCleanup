@@ -45,6 +45,7 @@ class ReviewUiApiTests(unittest.TestCase):
         self.assertEqual(connection.execute("SELECT event FROM audit_log").fetchone()[0], "approved")
         connection.close()
         self.assertEqual(self.client.post("/api/groups/domain:example.com/decision", json={"status": "approved"}).status_code, 409)
+        self.assertEqual(self.client.get("/api/groups").json(), [])
 
     def _batch_in_restore_window(self, batch_id: str = "restore-batch", deadline: float | None = None) -> str:
         deadline = deadline if deadline is not None else time.time() + 86_400
@@ -128,6 +129,43 @@ class ReviewUiApiTests(unittest.TestCase):
         finally:
             review_ui.invoke = original_invoke
         self.assertEqual(calls, [("--live", "--restore", restore_id), ("--live", "--archive", "approved-batch")])
+
+    def test_failed_batch_retry_uses_pending_message_state_to_resume_archive(self) -> None:
+        batch_id = self._batch_in_restore_window("failed-batch")
+        connection = connect(self.path)
+        with connection:
+            connection.execute("UPDATE batches SET status='failed' WHERE batch_id=?", (batch_id,))
+            connection.execute("UPDATE batch_messages SET status='pending' WHERE batch_id=?", (batch_id,))
+        connection.close()
+        calls: list[tuple[str, ...]] = []
+        original_invoke = review_ui.invoke
+        review_ui.invoke = lambda *arguments: calls.append(arguments)
+        try:
+            response = self.client.post(f"/api/batches/{batch_id}/retry", json={"operation": "archive"})
+        finally:
+            review_ui.invoke = original_invoke
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["operation"], "archive")
+        self.assertEqual(calls, [("--live", "--archive", batch_id)])
+        batches = self.client.get("/api/batches").json()
+        self.assertEqual(batches[0]["retry_operations"], ["archive"])
+
+    def test_ambiguous_failed_batch_requires_explicit_restore_or_trash_choice(self) -> None:
+        batch_id = self._batch_in_restore_window("ambiguous-failed")
+        connection = connect(self.path)
+        with connection:
+            connection.execute("UPDATE batches SET status='failed', permanent_delete_confirmed_at=1 WHERE batch_id=?", (batch_id,))
+        connection.close()
+        self.assertEqual(self.client.post(f"/api/batches/{batch_id}/retry", json={}).status_code, 409)
+        original_invoke = review_ui.invoke
+        calls: list[tuple[str, ...]] = []
+        review_ui.invoke = lambda *arguments: calls.append(arguments)
+        try:
+            response = self.client.post(f"/api/batches/{batch_id}/retry", json={"operation": "restore"})
+        finally:
+            review_ui.invoke = original_invoke
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, [("--live", "--restore", batch_id)])
 
     def test_executor_unavailable_returns_service_unavailable(self) -> None:
         batch_id = self._batch_in_restore_window()

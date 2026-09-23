@@ -161,6 +161,18 @@ No data lost or corrupted — all three failed batches are safely resumable the 
 
 **Requires a review-ui server restart to take effect** (the running process needs to reload `executor.py` to pick up the new worker) — do this before retrying the three batches still sitting `failed` from finding #10 (`comparably.com`, `xt2.kgbdeals.com`, `locboxlabs.org`).
 
+**Codex retry-flow correction — Claude re-reviewed, accepted.** Independently re-ran the full suite: **47/47 pass.** Verified directly against source:
+- `retry_operations()` (`review-ui/app.py:78-99`) checks, in order: (1) the latest `'failed'` audit note — if it starts with `operation=`, trust it and return that single operation unambiguously; (2) any `'pending'` `batch_messages` rows → `["archive"]`; (3) any `'trashed'` rows → `["trash"]` (real proof a Trash write was in progress); (4) otherwise, labeled-only with no persisted origin → `["restore", "trash"]`, forcing an explicit choice. This is exactly right, and actually better than my original suggestion — persisting the true originating operation (`_fail(batch_id, error, operation=...)`, threaded through `_preflight`/`_gmail_write`/every call site in `execute/runner.py`) resolves the ambiguity at the source instead of only inferring it after the fact.
+- `POST /api/batches/{id}/retry` (`review-ui/app.py:102-118`) correctly 409s when no operation is given and more than one is valid, 422s on an operation not in the valid set, and only 200s with an explicit or singly-implied operation. `batchButtons()` (`app.html`) renders one button per valid operation, so the ambiguous case genuinely shows both **Retry restore** and **Retry trash** with no default/pre-selection.
+- `test_ambiguous_failed_batch_requires_explicit_restore_or_trash_choice` directly proves the 409-without-choice behavior and successful dispatch once an operation is supplied.
+- **Minor test-coverage gap, not blocking:** no test directly exercises the *first* branch of `retry_operations()` — a batch whose failure note already says `operation=restore` or `operation=trash` resolving to that single operation without falling through to the pending/trashed heuristics. `test_execute.py`'s `test_preflight_failure_marks_batch_failed_without_touching_rows` confirms the note is written correctly for an archive failure, but nothing confirms `retry_operations()` actually reads it back correctly for a restore/trash failure. Verified correct by direct code inspection; recommend a follow-up test if this logic changes again.
+
+**Retry-flow correction: accepted and closed.**
+
+---
+
+**Process note, unrelated to any specific finding — found and fixed while reviewing this feature.** None of the actual code changes for findings #8, #9, #10, or this retry-flow correction were ever committed to git — every review commit I made (`ee1273b` through `2ee1e7e`) staged only `CHECKLIST.md`. `git log -- execute/runner.py` confirmed the last real commit touching it was the original Gate 5 submission (`c053dc2`); everything since has been sitting uncommitted in the working tree. GitHub had the narrative but not the code. Committing and pushing everything now as a single catch-up commit, then continuing to commit source changes alongside `CHECKLIST.md` going forward.
+
 ## Spec status
 
 - Technical spec: **v11**, committed to `main`.

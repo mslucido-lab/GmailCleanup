@@ -85,12 +85,14 @@ async function showGroup(key) {
 function batchButtons(batch) {
   const id = encodeURIComponent(batch.batch_id);
   if (batch.status === 'approved') return `<button onclick="archiveBatch('${id}', this)">Start archive run</button>`;
+  if (batch.status === 'failed') return (batch.retry_operations || []).map(operation => `<button onclick="retryBatch('${id}', '${operation}', this)">Retry ${esc(operation)}</button>`).join('');
   if (batch.status !== 'restore_window') return '';
   let controls = `<button onclick="restoreBatch('${id}', this)">Restore</button><button onclick="extendWindow('${id}', this)">Extend window</button>`;
   if (batch.display_status === 'delete_pending') controls += `<button onclick="confirmTrash('${id}', this)">Confirm move to Trash</button>`;
   return controls;
 }
 async function archiveBatch(id, button) { await action('/api/batches/' + id + '/start-archive', null, button); }
+async function retryBatch(id, operation, button) { await action('/api/batches/' + id + '/retry', {operation}, button); }
 async function restoreBatch(id, button) { await action('/api/batches/' + id + '/restore', null, button); }
 async function extendWindow(id, button) {
   const days = Number(prompt('Extend the restore window by how many days?', '7'));

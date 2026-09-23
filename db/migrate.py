@@ -13,6 +13,7 @@ from .connection import connect
 MODULE_DIR = Path(__file__).resolve().parent
 INITIAL_SCHEMA = MODULE_DIR / "schema.sql"
 MIGRATIONS_DIR = MODULE_DIR / "migrations"
+FOREIGN_KEYS_OFF_MARKER = "-- migrate: foreign_keys_off"
 
 
 def _available_migrations() -> Iterable[tuple[int, Path]]:
@@ -48,6 +49,7 @@ def migrate(connection: sqlite3.Connection) -> list[int]:
         if version in applied:
             continue
         sql = path.read_text(encoding="utf-8")
+        requires_foreign_keys_off = sql.lstrip().startswith(FOREIGN_KEYS_OFF_MARKER)
         escaped_path = str(path.name).replace("'", "''")
         script = (
             "BEGIN IMMEDIATE;\n"
@@ -57,10 +59,17 @@ def migrate(connection: sqlite3.Connection) -> list[int]:
             "COMMIT;"
         )
         try:
+            if requires_foreign_keys_off:
+                # Rebuilding a referenced table requires this outside the
+                # migration transaction; SQLite ignores this pragma in one.
+                connection.execute("PRAGMA foreign_keys = OFF")
             connection.executescript(script)
         except Exception:
             connection.rollback()
             raise
+        finally:
+            if requires_foreign_keys_off:
+                connection.execute("PRAGMA foreign_keys = ON")
         ran.append(version)
 
     return ran
