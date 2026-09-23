@@ -10,6 +10,9 @@
   button { padding: 7px 11px; margin: 4px 4px 0 0; } small { color: #666; }
   nav { margin: 20px 0; } .hidden { display: none; } .error { color: #9d1c1c; }
   .message { border-top: 1px solid #eee; padding: 8px 0; }
+  .chips { margin: 12px 0; } .chips button.active { background: #1f1e1d; color: #fff; }
+  .selection-summary { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); width: min(940px, calc(100% - 32px)); background: #1f1e1d; color: #fff; border-radius: 8px; padding: 12px 16px; box-shadow: 0 3px 15px #0004; }
+  .selection-summary button { float: right; } .selection-summary.hidden { display: none; }
 </style>
 <main>
   <h1>Gmail Cleanup</h1>
@@ -20,7 +23,7 @@
     <button onclick="view('progress')">Progress</button>
   </nav>
   <p id="notice" aria-live="polite"></p>
-  <section id="dashboard"><h2>Sender groups</h2><div id="groups"></div></section>
+  <section id="dashboard"><h2>Sender groups</h2><div id="categoryChips" class="chips"></div><div id="groups"></div></section>
   <section id="review" class="hidden"><h2>Group review</h2><div id="detail">Select a group from the dashboard.</div></section>
   <section id="queue" class="hidden">
     <h2>Approval queue</h2>
@@ -33,11 +36,16 @@
     <div id="batches"></div>
   </section>
 </main>
+<div id="selectionSummary" class="selection-summary hidden" aria-live="polite"></div>
 <script>
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 const token = value => encodeURIComponent(value).replace(/'/g, '%27');
 let selectedGroup = null;
+let activeCategory = null;
+let visibleGroups = new Map();
+const selectedGroups = new Map();
+const categories = ['Marketing / promotional', 'Automated notifications', 'Newsletters / subscriptions', 'Transactional / receipts', 'Business-critical', 'Personal correspondence'];
 
 function notice(message, failed = false) {
   $('#notice').textContent = message;
@@ -69,8 +77,30 @@ function view(id) {
 async function decide(key, status, button) {
   key = decodeURIComponent(key);
   const result = await action('/api/groups/' + encodeURIComponent(key) + '/decision', {status}, button);
+  selectedGroups.delete(key);
+  renderSelectionSummary();
   if (result?.batch_id) notice('Approved: batch ' + result.batch_id + ' is ready to archive.');
 }
+function selectCategory(category) {
+  activeCategory = category || null;
+  load();
+}
+function toggleSelection(key, checked) {
+  key = decodeURIComponent(key);
+  if (checked) selectedGroups.set(key, visibleGroups.get(key));
+  else selectedGroups.delete(key);
+  renderSelectionSummary();
+}
+function renderSelectionSummary() {
+  const selected = [...selectedGroups.values()].filter(Boolean);
+  const summary = $('#selectionSummary');
+  if (!selected.length) { summary.classList.add('hidden'); summary.textContent = ''; return; }
+  const messages = selected.reduce((total, group) => total + group.message_count, 0);
+  const bytes = selected.reduce((total, group) => total + group.total_size_bytes, 0);
+  summary.classList.remove('hidden');
+  summary.innerHTML = `<b>${selected.length} groups selected</b> · ${messages.toLocaleString()} messages · ${(bytes / 1e9).toFixed(2)} GB <button onclick="clearSelection()">Clear selection</button>`;
+}
+function clearSelection() { selectedGroups.clear(); renderSelectionSummary(); load(); }
 async function showGroup(key) {
   try {
     key = decodeURIComponent(key);
@@ -106,8 +136,14 @@ async function confirmTrash(id, button) {
 }
 async function load() {
   try {
-    const [groups, batches] = await Promise.all([api('/api/groups'), api('/api/batches')]);
-    $('#groups').innerHTML = groups.map(group => `<article class="row"><b>${esc(group.group_key)}</b><br><small>${esc(group.category)} · ${group.message_count} messages · ${(group.total_size_bytes / 1e9).toFixed(2)} GB · score ${Number(group.delete_safety_score).toFixed(1)}</small><p><button onclick="showGroup('${token(group.group_key)}')">Review</button>${group.category === 'Business-critical' ? '<small>Protected: cannot approve.</small>' : `<button onclick="decide('${token(group.group_key)}', 'approved', this)">Approve</button><button onclick="decide('${token(group.group_key)}', 'rejected', this)">Reject</button><button onclick="decide('${token(group.group_key)}', 'skipped', this)">Skip</button>`}</p></article>`).join('') || '<p>No scored groups yet.</p>';
+    const filter = activeCategory ? '?category=' + encodeURIComponent(activeCategory) : '';
+    const [allGroups, groups, batches] = await Promise.all([api('/api/groups'), api('/api/groups' + filter), api('/api/batches')]);
+    const counts = new Map(categories.map(category => [category, 0]));
+    allGroups.forEach(group => counts.set(group.category, (counts.get(group.category) || 0) + 1));
+    $('#categoryChips').innerHTML = `<button class="${activeCategory ? '' : 'active'}" onclick="selectCategory()">All (${allGroups.length})</button>` + categories.map(category => `<button class="${activeCategory === category ? 'active' : ''}" onclick="selectCategory('${esc(category)}')">${esc(category)} (${counts.get(category) || 0})</button>`).join('');
+    visibleGroups = new Map(groups.map(group => [group.group_key, group]));
+    $('#groups').innerHTML = groups.map(group => { const key = token(group.group_key); const checked = selectedGroups.has(group.group_key) ? 'checked' : ''; const disabled = group.category === 'Business-critical' ? 'disabled' : ''; return `<article class="row"><label><input type="checkbox" ${checked} ${disabled} onchange="toggleSelection('${key}', this.checked)"> Select</label> <b>${esc(group.group_key)}</b><br><small>${esc(group.category)} · ${group.message_count} messages · ${(group.total_size_bytes / 1e9).toFixed(2)} GB · score ${Number(group.delete_safety_score).toFixed(1)}</small><p><button onclick="showGroup('${key}')">Review</button>${group.category === 'Business-critical' ? '<small>Protected: cannot approve.</small>' : `<button onclick="decide('${key}', 'approved', this)">Approve</button><button onclick="decide('${key}', 'rejected', this)">Reject</button><button onclick="decide('${key}', 'skipped', this)">Skip</button>`}</p></article>`; }).join('') || '<p>No scored groups yet.</p>';
+    renderSelectionSummary();
     $('#queueRows').innerHTML = batches.filter(batch => batch.status === 'approved').map(batch => `<article class="row"><b>${esc(batch.group_key)}</b> · ${batch.message_count} messages awaiting archive<br>${batchButtons(batch)}</article>`).join('') || '<p>No approved batches.</p>';
     $('#batches').innerHTML = batches.map(batch => `<article class="row"><b>${esc(batch.group_key)}</b> · ${esc(batch.display_status)}<br><small>${(batch.total_size_bytes / 1e9).toFixed(2)} GB queued for reclamation after Trash</small><br>${batchButtons(batch)}</article>`).join('') || '<p>No batches yet.</p>';
   } catch (error) { notice(error.message, true); }

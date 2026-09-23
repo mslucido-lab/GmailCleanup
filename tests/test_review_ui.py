@@ -47,6 +47,12 @@ class ReviewUiApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/groups/domain:example.com/decision", json={"status": "approved"}).status_code, 409)
         self.assertEqual(self.client.get("/api/groups").json(), [])
 
+    def test_groups_endpoint_filters_pending_groups_by_category(self) -> None:
+        response = self.client.get("/api/groups", params={"category": "Marketing / promotional"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([group["group_key"] for group in response.json()], ["domain:example.com"])
+        self.assertEqual(self.client.get("/api/groups", params={"category": "Business-critical"}).json(), [])
+
     def _batch_in_restore_window(self, batch_id: str = "restore-batch", deadline: float | None = None) -> str:
         deadline = deadline if deadline is not None else time.time() + 86_400
         connection = connect(self.path)
@@ -167,6 +173,24 @@ class ReviewUiApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, [("--live", "--restore", batch_id)])
 
+    def test_failure_audit_operation_selects_unambiguous_retry(self) -> None:
+        batch_id = self._batch_in_restore_window("audited-failed")
+        connection = connect(self.path)
+        with connection:
+            connection.execute("UPDATE batches SET status='failed' WHERE batch_id=?", (batch_id,))
+            connection.execute("INSERT INTO audit_log (batch_id,event,message_count,timestamp,note) VALUES (?,'failed',1,unixepoch(),'operation=restore; TimeoutError: test')", (batch_id,))
+        connection.close()
+        calls: list[tuple[str, ...]] = []
+        original_invoke = review_ui.invoke
+        review_ui.invoke = lambda *arguments: calls.append(arguments)
+        try:
+            response = self.client.post(f"/api/batches/{batch_id}/retry", json={})
+        finally:
+            review_ui.invoke = original_invoke
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["operation"], "restore")
+        self.assertEqual(calls, [("--live", "--restore", batch_id)])
+
     def test_executor_unavailable_returns_service_unavailable(self) -> None:
         batch_id = self._batch_in_restore_window()
         original_invoke = review_ui.invoke
@@ -182,6 +206,8 @@ class ReviewUiApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Start archive run", response.text)
         self.assertIn("Confirm move to Trash", response.text)
+        self.assertIn("categoryChips", response.text)
+        self.assertIn("selectionSummary", response.text)
 
 
 if __name__ == "__main__":
